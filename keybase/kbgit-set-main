@@ -1,0 +1,433 @@
+#!/bin/bash
+#
+# kbgit-set-main
+# John Simpson <jms1@jms1.net> 2022-01-08
+readonly LAST_UPDATED='2026-03-24'
+#
+# Set the primary branch of a Keybase git repo
+#
+###############################################################################
+#
+# MIT License
+#
+# Copyright (C) 2022-2026 John Simpson
+#
+# Permission is hereby granted, free of charge, to any person obtaining a
+# copy of this software and associated documentation files (the "Software"),
+# to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense,
+# and/or sell copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+#
+###############################################################################
+
+set -e
+
+###############################################################################
+#
+# Coloured line functions
+
+############################################################
+# Slice and dice a message into lines, print each line in the selected colour
+# - First parameter is the "n;n;n" value representing the foreground/background
+#   colour. It will be inserted into an "ESC [ ___ m" sequence.
+# - If more parmeters are present, they will be processsed.
+#   - Each parameter may be a single-line, multi-line, or empty string.
+# - If no more parameters are present, STDIN will be split into lines
+#   - empty lines in input will become blank coloured lines
+#   - empty STDIN will generate no output
+
+function coloured_line {
+    local COL P IFS LINE
+
+    ########################################
+    # The first parameter (required) is the 'n;n;n' code used in the escape
+    # sequence to set up the foreground and/or background colours.
+    #   ESC [ ___ m
+
+    COL="${1:?no colour code specified}"
+    shift
+
+    ########################################
+    # If any parameters remain (after shifting off the colour code),
+    # process each parameter.
+    # - Each parameter may be a single-line, multi-line, or empty string.
+    # - Split each parameter's value into lines.
+    # - Print each line, with the appropriate colour codes before/after it.
+
+    if (( $# > 0 ))
+    then
+        for P in "$@"
+        do
+            if [[ -n "$P" ]]
+            then
+                while IFS='' read -r LINE
+                do
+                    printf "\e[%sm%s\e[0K\e[0m\n" "$COL" "$LINE"
+                done <<< "$P"
+            else
+                printf "\e[%sm%s\e[0K\e[0m\n" "$COL" ''
+            fi
+        done
+
+    ########################################
+    # Otherwise (if no more parameters exist), process STDIN.
+    # - Each line will be printed, with the appropriate colour codes.
+    # - Empty lines are printed as empty strings, in the appropriate colour.
+
+    else
+        while IFS='' read -r LINE
+        do
+            printf "\e[%sm%s\e[0K\e[0m\n" "$COL" "$LINE"
+        done
+    fi
+}
+
+############################################################
+# Wrappers which specify different colours
+
+function redline {
+    coloured_line '0;1;37;41' "$@"
+}
+
+function yellowline {
+    coloured_line '0;30;43' "$@"
+}
+
+function blueline {
+    coloured_line '0;1;37;44' "$@"
+}
+
+function greenline {
+    coloured_line '0;1;37;42' "$@"
+}
+
+function cyanline {
+    coloured_line '0;1;37;46' "$@"
+}
+
+function purpleline {
+    coloured_line '0;1;37;45' "$@"
+}
+
+function whiteline {
+    coloured_line '0;1;37;47' "$@"
+}
+
+function fail {
+    redline "$@"
+    exit 1
+}
+
+###############################################################################
+#
+# Maybe print a command before executing it
+
+SET_X="${SET_X:-false}"
+
+function set_x {
+    local IFS=' '
+    if [[ "${SET_X:-false}" == "true" ]]
+    then
+        cyanline "$PS4$*" 1>&2
+    fi
+    "$@"
+}
+
+###############################################################################
+#
+# Debugging message
+
+DO_DEBUG="${DO_DEBUG:-false}"
+DEBUG_PREFIX=$'\f'
+
+function debug {
+    local IFS LINE LINES PREFIX
+
+    if [[ "${DO_DEBUG:-false}" == "true" ]]
+    then
+        if [[ "$DEBUG_PREFIX" == $'\f' ]]
+        then
+            local CALLER C_LINE C_FILE
+            CALLER="$( caller )"
+            C_LINE="${CALLER% *}"
+            C_FILE="${CALLER#* }"
+            PREFIX="$C_FILE:$C_LINE: "
+        else
+            PREFIX="$DEBUG_PREFIX"
+        fi
+
+        IFS=$'\n' read -a LINES -d '' -r <<< "$*" || true
+        for LINE in "${LINES[@]}"
+        do
+            yellowline "$PREFIX$LINE" 1>&2
+        done
+    fi
+}
+
+###############################################################################
+#
+# usage
+
+function usage {
+    MSG="${*:-}"
+
+    cat <<EOF
+$0 [-r REPO] [-t TEAM] [BRANCH]
+
+Set the primary branch of a Keybase git repo. If no branch name is specified,
+show the current primary branch name instead.
+
+-r ___  Specify the name of the repo. If not specified, try to identify the
+        repo and team name automatically by running 'git remote -v' in the
+        current directory.
+
+-t ___  If specifying a repo name with the '-r' option, specify the team name.
+        If not specified, the repo is owned by the current Keybase user.
+
+-x      Show the important commands being executed
+
+-D      Show debugging messages. This also enables the '-x' option.
+
+Last updated $LAST_UPDATED
+
+EOF
+
+    if [[ -n "$MSG" ]]
+    then
+        fail "$MSG"
+    fi
+
+    exit 0
+}
+
+###############################################################################
+#
+# Remove extra files that macOS loves to create
+
+function clean_macos {
+    local DIR
+    DIR="${1:-.}"
+
+    if [[ "$( set_x uname -s )" == 'Darwin' ]]
+    then
+        set_x find "$DIR" \( -name .DS_Store -or -name '._*' \) -print -delete
+    fi
+}
+
+###############################################################################
+###############################################################################
+###############################################################################
+#
+# Parse command line
+
+REPO=""
+TEAM=""
+SET_X=false
+DO_DEBUG=false
+BRANCH=""
+
+while getopts ':hr:t:xD' OPT
+do
+    case $OPT in
+        h)  usage
+            ;;
+        r)  REPO="$OPTARG"
+            ;;
+        t)  TEAM="$OPTARG"
+            ;;
+        x)  SET_X=true
+            ;;
+        D)  DO_DEBUG=true
+            SET_X=true
+            ;;
+        *)  usage "ERROR: unknown option '$OPTARG'"
+            ;;
+    esac
+done
+
+shift $(( OPTIND - 1 ))
+
+BRANCH="${1:-}"
+
+########################################
+# If a team was specified but no repo, throw an error
+
+if [[ -n "$TEAM" && -z "$REPO" ]]
+then
+    usage "ERROR: do not use '-t' without '-r'"
+fi
+
+############################################################
+# If no repo name was specified, and the current directory has a remote
+# pointing to a Keybase URL, extract the team/repo name from that remote.
+
+if [[ -z "$REPO" ]]
+then
+    ########################################
+    # Read the current directory's list of remote URLs
+
+    GRV="$( set_x git remote -v || true )"
+    if [[ -z "$GRV" ]]
+    then
+        fail "ERROR: the current directory is not a git repo with a remote"
+    fi
+
+    ########################################
+    # If any of the URLs are Keybase URLs, extract the team/repo names from
+    # the URL.
+    #
+    # If multiple Keybase URLs are present in the output (i.e. multiple
+    # remotes, or multiple URLs in the same remote), the FIRST matching URL
+    # in the output will be used.
+    # - It *looks like* the 'git remote -v' command sorts its output by the
+    #   remote name, but this is not documented anywhere so it may not be
+    #   safe to rely on this behaviour. To be safe, I recommend not having
+    #   multiple Keybase URLs in a repo directory's list of remotes,
+    #   especially if the URLs are not identical.
+
+    RE_TEAM='[[:space:]]keybase://team/([a-z0-9][^/]+)/([^ ]*)'
+    RE_USER='[[:space:]]keybase://private/([a-z0-9][^/]+)/([^ ]*)'
+
+    if [[ "$GRV" =~ $RE_TEAM ]]
+    then
+        TEAM="${BASH_REMATCH[1]}"
+        REPO="${BASH_REMATCH[2]}"
+    elif [[ "$GRV" =~ $RE_USER ]]
+    then
+        TEAM=""
+        REPO="${BASH_REMATCH[2]}"
+    else
+        redline 'ERROR: the current directory has no remotes with Keybase URLs'
+        echo "$GRV"
+        exit 1
+    fi
+fi
+
+debug "TEAM='$TEAM' REPO='$REPO'"
+
+############################################################
+# Figure out where KBFS is mounted
+
+KBFS=''
+for BASE in /keybase /Volumes/Keybase
+do
+    if [[ -d "$BASE/private" ]]
+    then
+        KBFS="$BASE"
+        break
+    fi
+done
+
+if [[ -z "$KBFS" ]]
+then
+    fail "Unable to find KBFS, cannot continue"
+fi
+
+debug "KBFS='$KBFS'"
+
+############################################################
+# Find and 'cd' into the repo's hidden back-end storage directory
+
+if [[ -n "$TEAM" ]]
+then
+    RDIR="$KBFS/team/$TEAM/.kbfs_git/$REPO"
+else
+    KUSR="$( keybase whoami )"
+    RDIR="$KBFS/private/$KUSR/.kbfs_git/$REPO"
+fi
+
+if ! [[ -d "$RDIR" ]]
+then
+    fail "ERROR: '$RDIR' does not exist"
+fi
+
+set_x cd "$RDIR"
+
+############################################################
+# If the repo has no HEAD file (i.e. if it was just created)
+
+if ! [[ -f HEAD ]]
+then
+    echo "This repo is newly created and has no branches yet."
+
+    ########################################
+    # If a branch name was specified
+    # - create the repo skeleton files with primary set to the specified name
+
+    if [[ -n "$BRANCH" ]]
+    then
+        ########################################
+        # Create the skeleton of an empty repo,
+        # with the specified branch pre-set
+
+        set_x mkdir -p objects/{info,pack} refs/{heads,tags}
+        set_x echo "ref: refs/heads/$BRANCH" > HEAD
+        set_x echo -e '[core]\n\tbare = true\n\n[pack]\n\twindow = 0\n' > config
+
+        ########################################
+        # Clean up extra files that macOS likes to create
+
+        clean_macos .
+
+    ########################################
+    # No branch name was specified
+
+    else
+        echo "No branch name specified, nothing to do."
+    fi
+
+    ########################################
+    # Done
+
+    exit 0
+fi
+
+############################################################
+# Show the current HEAD file
+
+set_x cat HEAD
+
+############################################################
+# If we're changing it, do the deed
+
+if [[ -n "$BRANCH" ]]
+then
+    ########################################
+    # If the branch doesn't exist in the repo, show a warning
+
+    BRF="$( set_x git branch -a | set_x grep " $BRANCH\$" || true )"
+
+    if [[ -z "$BRF" ]]
+    then
+        yellowline "WARNING: branch '$BRANCH' does not exist in this repo"
+        cat <<EOF
+
+If you're setting up a new repo, don't forget to push a branch with this name
+before trying to clone the repo from Keybase.
+
+EOF
+    fi
+
+    ########################################
+    # Write the new HEAD file
+
+    set_x echo "ref: refs/heads/$BRANCH" > HEAD
+    set_x cat HEAD
+
+    ########################################
+    # Clean up extra files that macOS likes to create
+
+    clean_macos .
+fi
