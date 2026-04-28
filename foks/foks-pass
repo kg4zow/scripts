@@ -2,18 +2,15 @@
 #
 # foks-pass
 # John Simpson <jms1@jms1.net> 2026-01-01
-LAST_UPDATED="2026-01-20"
+LAST_UPDATED="2026-04-28"
 #
 # Password storage/retrieval using FOKS
 #
 ###############################################################################
 #
-# Portions of the script are from a template created by John Simpson, who has
-# released them under the MIT License.
-#
 # MIT License
 #
-# Copyright (C) 2025 John Simpson
+# Copyright (C) 2025-2026 John Simpson
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the "Software"),
@@ -32,16 +29,6 @@ LAST_UPDATED="2026-01-20"
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
-#
-###############################################################################
-#
-# The remaining contents of the script are covered under this license:
-#
-# (License Name)
-#
-# Copyright (C) 2025 whoever
-#
-# Details about this script's licensing
 #
 ###############################################################################
 
