@@ -1,0 +1,626 @@
+#!/bin/bash
+#
+# foks-pass
+# John Simpson <jms1@jms1.net> 2026-01-01
+LAST_UPDATED="2026-01-20"
+#
+# Password storage/retrieval using FOKS
+#
+###############################################################################
+#
+# Portions of the script are from a template created by John Simpson, who has
+# released them under the MIT License.
+#
+# MIT License
+#
+# Copyright (C) 2025 John Simpson
+#
+# Permission is hereby granted, free of charge, to any person obtaining a
+# copy of this software and associated documentation files (the "Software"),
+# to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense,
+# and/or sell copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+#
+###############################################################################
+#
+# The remaining contents of the script are covered under this license:
+#
+# (License Name)
+#
+# Copyright (C) 2025 whoever
+#
+# Details about this script's licensing
+#
+###############################################################################
+
+PATH="/usr/bin:/bin"
+
+for X in /usr/local/bin /opt/homebrew/bin
+do
+    if [[ -d "$X" ]]
+    then
+        PATH="$PATH:$X"
+    fi
+done
+
+########################################
+# Default values
+
+DEFAULT_FOKS_PREFIX="/test/pass"
+
+########################################
+# Will be set via getopts
+
+FOKS_PREFIX=""
+FOKS_TEAM=""
+
+###############################################################################
+#
+# Coloured line functions
+
+############################################################
+# Slice and dice a message into lines, print each line in the selected colour
+# - first parameter is colour, will be inserted into "ESC [ ... m" sequence
+# - if more parmeters are present, each is a line (or multi-line)
+# - if no more parameters are present, STDIN will be split into lines
+
+function coloured_line {
+    local COL P IFS LINE LINES
+
+    COL="${1:?no colour code specified}"
+    shift
+
+    if [[ -n "$1" ]]
+    then
+        ########################################
+        # each parameter is a line
+
+        for P in "$@"
+        do
+            IFS=$'\n' read -a LINES -d '' -r <<< "$P" || true
+            for LINE in "${LINES[@]}"
+            do
+                printf "\e[%sm%s\e[0K\e[0m\n" "$COL" "$LINE"
+            done
+        done
+    else
+        ########################################
+        # STDIN will contain one or more lines of text
+
+        while IFS='' read -r LINE
+        do
+            printf "\e[%sm%s\e[0K\e[0m\n" "$COL" "$LINE"
+        done
+    fi
+}
+
+############################################################
+# Wrappers which specify different colours
+
+function redline {
+    coloured_line '0;1;37;41' "$@"
+}
+
+function yellowline {
+    coloured_line '0;30;43' "$@"
+}
+
+function blueline {
+    coloured_line '0;1;37;44' "$@"
+}
+
+function greenline {
+    coloured_line '0;1;37;42' "$@"
+}
+
+function cyanline {
+    coloured_line '0;1;37;46' "$@"
+}
+
+function purpleline {
+    coloured_line '0;1;37;45' "$@"
+}
+
+function whiteline {
+    coloured_line '0;1;37;47' "$@"
+}
+
+function fail {
+    redline "$@"
+    exit 1
+}
+
+###############################################################################
+#
+# Maybe print a command before executing it
+
+SET_X="${SET_X:-false}"
+
+function set_x {
+    local IFS=' '
+    if [[ "${SET_X:-false}" == "true" ]]
+    then
+        cyanline "$PS4$*" 1>&2
+    fi
+    "$@"
+}
+
+########################################
+# Show the same output that set_x would show,
+# but don't actually run the command
+
+function show_x {
+    local IFS=' '
+    if [[ "${SET_X:-false}" == "true" ]]
+    then
+        cyanline "$PS4$*" 1>&2
+    fi
+}
+
+###############################################################################
+#
+# Debugging message
+
+DO_DEBUG="${DO_DEBUG:-false}"
+DEBUG_PREFIX="LOC"
+
+function debug {
+    local IFS LINE LINES PREFIX
+
+    if [[ "${DO_DEBUG:-false}" == "true" ]]
+    then
+        if [[ "$DEBUG_PREFIX" == "LOC" ]]
+        then
+            local CALLER C_LINE C_FILE
+            CALLER="$( caller )"
+            C_LINE="${CALLER% *}"
+            C_FILE="${CALLER#* }"
+            PREFIX="$C_FILE:$C_LINE: "
+        else
+            PREFIX="$DEBUG_PREFIX"
+        fi
+
+        IFS=$'\n' read -a LINES -d '' -r <<< "$*" || true
+        for LINE in "${LINES[@]}"
+        do
+            yellowline "$PREFIX$LINE"
+        done
+    fi
+}
+
+###############################################################################
+#
+# Usage
+# - https://docopt.org/ is the "standard" for how to describe options
+
+function usage {
+    local MSG="${*:-}"
+
+    cat <<EOF
+$0 [OPTIONS] COMMAND [ARGS]
+
+Simple password storage/retrieval program. Stores entries as FOKS key-value
+entries.
+
+Commands
+
+help
+    Show help message for the specified command.
+ls (list)
+    List item names.
+put (add, insert, set, update)
+    Insert or update a value.
+get (show)
+    Retrieve a value.
+rm (delete, remove)
+    Delete a value.
+
+Options
+
+-t ___  Specify a FOKS team name to use.
+
+-P ___  Override the KV path where items are stored.
+        Default: $DEFAULT_FOKS_PREFIX
+
+Last updated $LAST_UPDATED
+
+EOF
+
+    if [[ -n "$MSG" ]]
+    then
+        fail "$MSG"
+    fi
+
+    exit 0
+}
+
+###############################################################################
+#
+# Help message functions
+
+function do_help_help {
+    debug 'do_help_help'
+
+    cat <<EOF
+foks-pass help [COMMAND]
+
+Show information about a 'foks-pass' command.
+
+EOF
+}
+
+function do_help_ls {
+    debug 'do_help_ls'
+
+    cat <<EOF
+foks-pass ls [-r] [PATH]
+
+Aliases: list
+
+List the password items in a given storage directory. If PATH is not
+specified, list items in the root directory.
+
+-r      Also list items in all child directories.
+
+EOF
+}
+
+function do_help_put {
+    debug 'do_help_put'
+
+    cat <<EOFF
+foks-pass put [-s ___] NAME
+
+Aliases: add, insert, set, update
+
+Add or update an item. If a value is not specified, the value will be read
+from STDIN.
+
+-s      Specify the value.
+
+The '-s' option is not safe to use on a multi-user machine, since the
+command line will be visible in 'ps' output while the command is running.
+If this is a concern, use a command like one of these:
+
+echo password | foks-pass insert NAME
+
+foks-pass insert NAME <<EOF
+password
+EOF
+
+EOFF
+}
+
+function do_help_get {
+    fail "do_help_get() not written yet"
+}
+
+function do_help_rm {
+    fail "do_help_rm() not written yet"
+}
+
+function do_help {
+    local HCMD
+    HCMD="${1:-}"
+
+    debug "do_help: HCMD='$HCMD'"
+
+    case $HCMD in
+        '')
+                    usage
+                    ;;
+        help)
+                    do_help_help
+                    ;;
+        ls|list)
+                    do_help_ls
+                    ;;
+        put|add|insert|set|update)
+                    do_help_put
+                    ;;
+        get|show)
+                    do_help_get
+                    ;;
+        rm|delete|remove)
+                    do_help_rm
+                    ;;
+        *)
+                    echo "help: unknown command '$HCMD'"
+                    exit 1
+                    ;;
+    esac
+
+    exit 0
+}
+
+###############################################################################
+#
+# ls: list keys
+
+function do_ls {
+    local RECURSE NAME OPT ITEMS ITEM
+
+    ########################################
+    # If the first arg is '-h', show the help message and return.
+
+    if [[ "${1:-}" == "-h" ]]
+    then
+        do_help_ls
+        return
+    fi
+
+    ########################################
+    # If the first arg is '-r' or '-R', set the RECURSE flag.
+
+    if [[ "${1:-}" =~ ^-[Rr]$ ]]
+    then
+        RECURSE="-r"
+        shift
+    else
+        RECURSE=""
+    fi
+
+    ########################################
+    # Get the name. Make sure it starts with '/' and does not end with '/'.
+
+    NAME="/${1#/}"
+    NAME="${NAME%/}"
+
+    debug "do_ls('$NAME') starting"
+
+    ########################################
+    # Build the list of options for the 'foks kv ls' command
+
+    OPT=( '-F' )
+    if [[ -n "$FOKS_TEAM" ]]
+    then
+        OPT+=( '--team' "$FOKS_TEAM" )
+    fi
+
+    ########################################
+    # Read the item names in "this" directory.
+
+    ITEMS=()
+    while IFS='' read -r ITEM
+    do
+        ITEMS+=( "$ITEM" )
+    done < <(   set_x foks kv ls "${FOKS_PREFIX}${NAME}" "${OPT[@]}" \
+              | set_x sed "s,${FOKS_PREFIX}/,," \
+              | set_x sort )
+
+    ########################################
+    # Print the items, possibly recursing into child directories
+
+    for ITEM in "${ITEMS[@]}"
+    do
+        if [[ -n "$RECURSE" ]]
+        then
+            if [[ "$ITEM" =~ /$ ]]
+            then
+                do_ls '-r' "${NAME}${ITEM%/}"
+            else
+                echo "$ITEM"
+            fi
+        else
+            echo "$ITEM"
+        fi
+    done
+
+    debug "do_ls('$NAME') ending"
+}
+
+###############################################################################
+#
+# put: add or update an entry
+
+function do_put {
+    local CONTENT FROM_STDIN NAME OPT
+
+    debug "do_put starting, \$1='$1'"
+
+    ########################################
+    # If the first arg is '-h', show the help message and return.
+
+    if [[ "${1:-}" == "-h" ]]
+    then
+        do_help_put
+        return
+    fi
+
+    ########################################
+    # If the first arg is '-s', the second arg is our content.
+    # Otherwise, the 'foks kv put' command will need to read the content
+    # from this script's STDIN directly.
+
+    if [[ "${1:-}" == "-s" ]]
+    then
+        FROM_STDIN=false
+        CONTENT="${2:-}"
+        shift 2
+    else
+        FROM_STDIN=true
+    fi
+
+    ########################################
+    # Get the name. Make sure it starts with '/' and does not end with '/'.
+    # If no name was specified, show the help message.
+
+    NAME="/${1#/}"
+    NAME="${NAME%/}"
+
+    if [[ -z "$NAME" ]]
+    then
+        do_help_put
+        exit 1
+    fi
+
+    ########################################
+    # Build the list of options for the 'foks kv put' command
+
+    OPT=( '--force' )
+    if [[ -n "$FOKS_TEAM" ]]
+    then
+        OPT+=( '--team' "$FOKS_TEAM" )
+    fi
+
+    ########################################
+    # Insert or update the item
+
+    if $FROM_STDIN
+    then
+        set_x foks kv put "${FOKS_PREFIX}${NAME}" "${OPT[@]}"
+    else
+        set_x echo -n "$CONTENT" | set_x foks kv put "${FOKS_PREFIX}${NAME}" "${OPT[@]}"
+    fi
+}
+
+###############################################################################
+#
+# get: retrieve the contents of an item
+
+function do_get {
+    local OUTFILE NAME OPT
+
+    debug "do_get starting, \$1='$1'"
+
+    ########################################
+    # If the first arg is '-h', show the help message and return.
+
+    if [[ "${1:-}" == "-h" ]]
+    then
+        do_help_get
+        return
+    fi
+
+    ########################################
+    # If the first arg is '-o', the second arg is an output filename
+
+    if [[ "${1:-}" == "-o" ]]
+    then
+        OUTFILE="${2:-}"
+        shift 2
+    else
+        OUTFILE=""
+    fi
+
+    ########################################
+    # Get the name. Make sure it starts with '/' and does not end with '/'.
+    # If no name was specified, show the help message.
+
+    NAME="/${1#/}"
+    NAME="${NAME%/}"
+
+    if [[ -z "$NAME" ]]
+    then
+        do_help_get
+        exit 1
+    fi
+
+    ########################################
+    # Build the list of options for the 'foks kv get' command
+
+    OPT=()
+
+    if [[ -n "$FOKS_TEAM" ]]
+    then
+        OPT+=( '--team' "$FOKS_TEAM" )
+    fi
+
+    if [[ -n "$OUTFILE" ]]
+    then
+        OPT+=( "$OUTFILE" )
+    else
+        OPT+=( '--force-output' )
+    fi
+
+    ########################################
+    # Run the command
+
+    set_x foks kv get "${FOKS_PREFIX}${NAME}" "${OPT[@]}"
+}
+
+###############################################################################
+#
+# rm: remove an item (or an entire "directory tree")
+
+function do_rm {
+    fail "do_rm() is not written yet"
+}
+
+###############################################################################
+###############################################################################
+###############################################################################
+#
+# Process the command line
+
+FOKS_TEAM=""
+FOKS_PREFIX="$DEFAULT_FOKS_PREFIX"
+
+while getopts ':hxDt:P:' OPT
+do
+    case $OPT in
+        h)  usage
+            ;;
+        x)  SET_X=true
+            ;;
+        D)  DO_DEBUG=true
+            SET_X=true
+            ;;
+        t)  FOKS_TEAM="$OPTARG"
+            ;;
+        P)  FOKS_PREFIX="$OPTARG"
+            ;;
+        *)  usage "ERROR: unknown option '-${OPTARG}'"
+            ;;
+    esac
+done
+
+shift $(( OPTIND - 1 ))
+
+debug "FOKS_PREFIX='$FOKS_PREFIX'"
+debug "FOKS_TEAM='$FOKS_TEAM'"
+
+###############################################################################
+#
+# Get the command
+
+CMD="${1:-}"
+shift
+
+debug "CMD='$CMD'"
+if [[ -z "$CMD" ]]
+then
+    usage
+fi
+
+case $CMD in
+    help)   do_help "$@"
+            ;;
+    ls|list)
+            do_ls "$@"
+            ;;
+    put|add|insert|set|update)
+            do_put "$@"
+            ;;
+    get|show)
+            do_get "$@"
+            ;;
+    rm|delete|remove)
+            do_rm "$@"
+            ;;
+    *)
+            usage "ERROR: unknown command '$CMD'"
+            ;;
+esac
