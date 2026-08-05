@@ -1,0 +1,243 @@
+#!/bin/bash
+#
+# webloc
+# John Simpson <jms1@jms1.net> 2026-08-05 Wed
+readonly LAST_UPDATED='2026-08-05 Wed'
+#
+# Read, create, or update a macOS `.webloc` file
+#
+###############################################################################
+#
+# MIT License
+#
+# Copyright (C) 2026 John Simpson
+#
+# Permission is hereby granted, free of charge, to any person obtaining a
+# copy of this software and associated documentation files (the "Software"),
+# to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense,
+# and/or sell copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+#
+###############################################################################
+
+set -e
+
+###############################################################################
+#
+# Coloured line functions
+
+############################################################
+# Slice and dice a message into lines, print each line in the selected colour
+# - First parameter is the "n;n;n" value representing the foreground/background
+#   colour. It will be inserted into an "ESC [ ___ m" sequence.
+# - If more parmeters are present, they will be processsed.
+#   - Each parameter may be a single-line, multi-line, or empty string.
+# - If no more parameters are present, STDIN will be split into lines
+#   - empty lines in input will become blank coloured lines
+#   - empty STDIN will generate no output
+
+function coloured_line {
+    local COL P IFS LINE
+
+    ########################################
+    # The first parameter (required) is the 'n;n;n' code used in the escape
+    # sequence to set up the foreground and/or background colours.
+    #   ESC [ ___ m
+
+    COL="${1:?no colour code specified}"
+    shift
+
+    ########################################
+    # If any parameters remain (after shifting off the colour code),
+    # process each parameter.
+    # - Each parameter may be a single-line, multi-line, or empty string.
+    # - Split each parameter's value into lines.
+    # - Print each line, with the appropriate colour codes before/after it.
+
+    if (( $# > 0 ))
+    then
+        for P in "$@"
+        do
+            if [[ -n "$P" ]]
+            then
+                while IFS='' read -r LINE
+                do
+                    printf "\e[%sm%s\e[0K\e[0m\n" "$COL" "$LINE"
+                done <<< "$P"
+            else
+                printf "\e[%sm%s\e[0K\e[0m\n" "$COL" ''
+            fi
+        done
+
+    ########################################
+    # Otherwise (if no more parameters exist), process STDIN.
+    # - Each line will be printed, with the appropriate colour codes.
+    # - Empty lines are printed as empty strings, in the appropriate colour.
+
+    else
+        while IFS='' read -r LINE
+        do
+            printf "\e[%sm%s\e[0K\e[0m\n" "$COL" "$LINE"
+        done
+    fi
+}
+
+############################################################
+# Wrappers which specify different colours
+
+function redline {
+    coloured_line '0;1;37;41' "$@"
+}
+
+function cyanline {
+    coloured_line '0;1;37;46' "$@"
+}
+
+function fail {
+    redline "$@"
+    exit 1
+}
+
+###############################################################################
+#
+# Maybe print a command before executing it
+
+SET_X="${SET_X:-false}"
+
+function set_x {
+    local IFS=' '
+    if [[ "${SET_X:-false}" == "true" ]]
+    then
+        cyanline "$PS4$*" 1>&2
+    fi
+    "$@"
+}
+
+###############################################################################
+#
+# Usage
+
+function usage {
+    local MSG
+    MSG="${*:-}"
+
+    cat <<EOF
+$0 [OPTIONS] FILE
+
+Read, create, or update a macOS '.webloc' file.
+
+-s ___  Set the URL which should be contained in the '.webloc' file.
+        - This will create a new file or update an existing file.
+        - If this option is not used,  the script will print the URL
+          currently contained in the file.
+
+-x      Show the 'plutil' commands before executing them.
+
+-h      Show this help message.
+
+If '-s' is not used, the script will show the URL currently in the file.
+
+Last updated $LAST_UPDATED
+
+EOF
+
+    if [[ -n "$MSG" ]]
+    then
+        fail "$MSG"
+    fi
+
+    exit 0
+}
+
+###############################################################################
+###############################################################################
+###############################################################################
+#
+# Process the command line
+
+NEW_URL=''
+
+while getopts ':s:xh' OPT
+do
+    case $OPT in
+        s)  NEW_URL="$OPTARG"
+            ;;
+        x)  SET_X=true
+            ;;
+        h)  usage
+            ;;
+        *)  usage "ERROR: unknown option '-${OPTARG}'"
+            ;;
+    esac
+done
+
+shift $(( OPTIND - 1 ))
+
+########################################
+# Make sure that a '.webloc' filename was specified
+
+FILE="${1:-}"
+if [[ -z "$FILE" ]]
+then
+    usage
+elif ! [[ "$FILE" =~ \.webloc$ ]]
+then
+    usage "ERROR: filename must end with '.webloc'"
+fi
+
+########################################
+# Make sure 'plutil' is available
+
+if [[ -z "$( type -t plutil )" ]]
+then
+    fail "ERROR: 'plutil' not found in your PATH, cannot continue"
+fi
+
+###############################################################################
+#
+# If we're setting the URL, do that
+
+if [[ -n "$NEW_URL" ]]
+then
+    echo "NEW: $NEW_URL"
+
+    ########################################
+    # If the file already exists, update the URL
+
+    if [[ -f "$FILE" ]]
+    then
+        set_x plutil -replace URL -string "$NEW_URL" -- "$FILE"
+
+    ########################################
+    # Otherwise, create the file
+
+    else
+        set_x plutil -create xml1 "$FILE"
+        set_x plutil -insert URL -string "$NEW_URL" -- "$FILE"
+    fi
+
+############################################################
+# Otherwise, if the file exists, report the current URL
+
+elif [[ -f "$FILE" ]]
+then
+    set_x plutil -extract URL raw -- "$FILE"
+
+############################################################
+# Otherwise, throw an error
+
+else
+    fail "ERROR: '$FILE' does not exist"
+fi
